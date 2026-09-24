@@ -2,10 +2,10 @@
 //   node sound.mjs            (reads the spawn times from swarm.json, written by: node sound.mjs --dump)
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 
-const SR = 44100, DUR = 15, N = SR * DUR, out = new Float32Array(N);
+const SR = 44100, DUR = 22, N = SR * DUR, out = new Float32Array(N);
 let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const noise = () => rnd() * 2 - 1;
-const at = t => Math.round(t * SR);
+const at = t => Math.round(t * SR), TAU23 = 2 * Math.PI * 23;
 
 // RBJ biquad
 function biquad(type, f, q = .7) {
@@ -68,6 +68,22 @@ whoosh(T.go - .05, .35, .35, 600, 3000);
 bustle(T.go, 15, 90, 1.2);                    // back to work
 whoosh(T.wipe, .38, .35);
 
+// ---------- that night (15-22 s) ----------
+const NT = { take: 1.4, chug: 1.65, chug1: 2.2, toss: 2.3, clink: 2.6, adv: 2.75, twitch: 3.5, pull: 4.4, note: 5.9, fade: 6.55 }, N0 = 15;
+whoosh(N0 - .02, .35, .3, 2400, 300);                                      // the wipe drags off
+for (let t = N0 + .2; t < 21.9; t += .47 + .2 * rnd()) for (let k = 0; k < 3; k++) tick(t + k * .045, .05, 4600);   // crickets
+{ let ph = 0; const lp = biquad('lp', 900);                                 // Clawd's caffeine buzz, louder after the chug
+  add(N0, 6.9, x => { ph += 2 * Math.PI * (140 + 6 * Math.sin(x * 50)) / SR; const k = 1 + 1.6 * Math.min(1, Math.max(0, (x - NT.chug1) / .6)); return lp(Math.sign(Math.sin(ph))) * (.5 + .5 * Math.sin(x * TAU23)) * .06 * k * Math.min(1, x * 3, (6.9 - x) * 2); }, 1); }
+pop(N0 + NT.take, 520, .35);                                               // snatch
+for (let k = 0; k < 4; k++) { const bp = biquad('bp', 260 + 40 * k, 6); add(N0 + NT.chug + k * .13, .1, x => bp(noise()) * Math.sin(Math.PI * x / .1), 3); }   // glug glug
+ding(N0 + NT.clink, 2900, .25, 9); ding(N0 + NT.clink + .06, 3400, .15, 12);   // clink onto the tower
+for (let k = 0; k < 14; k++) tick(N0 + NT.adv + k * .035 + .02 * rnd(), .2, 1200 + 400 * rnd());   // the queue shuffles up
+tick(N0 + NT.twitch, .35, 6000); tick(N0 + NT.twitch + .4, .35, 6000);      // eye twitch
+whoosh(N0 + NT.pull, .9, .25, 1800, 400);                                   // pull back
+pop(N0 + NT.note, 620, .5);                                                 // tomorrow's note
+
+
+for (let i = at(21.55); i < N; i++) out[i] *= Math.max(0, 1 - (i - at(21.55)) / (N - at(21.55)));
 // fade in/out a few ms, normalize, write 16-bit WAV
 let pk = 0; for (let i = 0; i < N; i++) pk = Math.max(pk, Math.abs(out[i]));
 const g = .89 / pk, buf = Buffer.alloc(44 + N * 2);

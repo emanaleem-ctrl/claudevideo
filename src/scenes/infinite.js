@@ -186,9 +186,9 @@
     for (let k = 0; k < 3; k++) ink2([[-1600 + k * 1860, 622], [-1600 + (k + 1) * 1860, 622]], 1.4, PAL.ink, 'ink', 0);
   }
   // the sticky note, with a coffee cup icon
-  function note(t, x, y) {
-    const k = seg(t, tNote, tNote + .3); if (k <= 0) return;
-    const s = backOut(k) * 115, r = -.06 + .04 * spring(t, tNote + .15, 5, 14);
+  function note(t, x, y, t0 = tNote) {
+    const k = seg(t, t0, t0 + .3); if (k <= 0) return;
+    const s = backOut(k) * 115, r = -.06 + .04 * spring(t, t0 + .15, 5, 14);
     boilSeed('note');
     T2.push(); T2.tr(x, y); T2.rot(r);
     paint2(rectPts(-s, -s, 2 * s, 2 * s, 3), { wash: C.note, ink: PAL.ink, sw: 1.2 });
@@ -723,5 +723,114 @@
     if (t > tWipe) wipe2(seg(t, tWipe, dur) * .5, [C.deskDk, C.desk]);
   }
 
-  shots([[0, film]]);
+
+  // ---------- epilogue: that night ----------
+  // The wipe lands on night. Clawd has had every one of those coffees and is vibrating next to a tower of empty cups,
+  // and the queue of minis holding fresh ones goes on forever. A new note pops up: tomorrow's coffee.
+  const NT = { take: 1.4, chug: 1.65, chug1: 2.2, toss: 2.3, clink: 2.6, adv: 2.75, twitch: 3.5, pull: 4.4, pull1: 5.3, note: 5.9, fade: 6.55 };
+  const QPATH = [[1195, 888], [1500, 905], [1900, 925], [2330, 965], [2620, 1080], [2480, 1250], [1950, 1330], [1350, 1370], [760, 1410], [200, 1460], [-400, 1520], [-900, 1600]];
+  const QL = polyLen(QPATH), QN = 46, QS = 118, LAMP = [560, 870];
+  const TOWER = []; for (let c = 0; c < 3; c++) for (let k = 0; k < [6, 8, 5][c]; k++) TOWER.push([600 + c * 52 + 6 * (hash(c * 9 + k) - .5), 855 - k * 33, (hash(k + c * 5) - .5) * .12]);
+  const LITTER = []; for (let i = 0; i < 14; i++) LITTER.push([300 + 1300 * hash(i + 71), 960 + 380 * hash(i + 91), (hash(i + 33) - .5) * 3]);
+  function nightOverlay(holes, dark) {   // darkness everywhere except soft pools of light: holes = [[sx, sy, r, strength], ...]
+    layer2(g => {
+      g.fillStyle = `rgba(14,18,50,${dark})`; g.fillRect(0, 0, W, H);
+      g.globalCompositeOperation = 'destination-out';
+      for (const [sx, sy, r, k] of holes) { const gr = g.createRadialGradient(sx, sy, r * .1, sx, sy, r); gr.addColorStop(0, `rgba(0,0,0,${.95 * k})`); gr.addColorStop(.55, `rgba(0,0,0,${.6 * k})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0, 0, W, H); }
+      g.globalCompositeOperation = 'lighter';
+      const [sx, sy, r] = holes[0], gw = g.createRadialGradient(sx, sy, 0, sx, sy, r * .7); gw.addColorStop(0, 'rgba(255,185,90,.2)'); gw.addColorStop(1, 'rgba(255,185,90,0)');
+      g.fillStyle = gw; g.fillRect(0, 0, W, H);
+      g.globalCompositeOperation = 'source-over';
+    }, true, 'night');
+  }
+  function nightWindow(t) {   // the same window, now dark, with a moon and stars
+    boilSeed('nwin');
+    paint2(rectPts(-900, -300, 620, 560, 3), { wash: '#1E2552', ink: PAL.ink, sw: 1.6 });
+    paint2(ellPts(-420, -170, 50, 50, 20), { wash: PAL.cream, ink: PAL.ink, sw: .8 });
+    for (let i = 0; i < 12; i++) paint2(starPts(-880 + 580 * hash(i + 5), -280 + 520 * hash(i + 17), 5 + 4 * hash(i) * (.7 + .3 * Math.sin(t * 3 + i)), .35, 4), { wash: PAL.cream, ink: null });
+    ink2([[-590, -300], [-590, 260]], 1.6, PAL.ink, 'ink', 0); ink2([[-900, -20], [-280, -20]], 1.6, PAL.ink, 'ink', 0);
+  }
+  function lamp(t) {
+    boilSeed('lamp');
+    const [x, y] = LAMP;
+    paint2(ellPts(x, y - 8, 70, 16, 16), { wash: '#3B3550', ink: PAL.ink, sw: 1.2 });
+    ink2([[x, y - 12], [x - 40, y - 230], [x + 60, y - 330]], 2.4, '#3B3550', 'ink', 0);
+    paint2([[x + 20, y - 370], [x + 110, y - 300], [x + 190, y - 230], [x + 60, y - 380]], { wash: PAL.teal, ink: PAL.ink, sw: 1.2 });
+    paint2(ellPts(x + 145, y - 255, 22, 14, 12, 0, .6), { wash: '#FFE9A8', ink: PAL.ink, sw: .8 });
+  }
+  const qAdv = lt => ease(seg(lt, NT.adv, NT.adv + .5));
+  function queueMini(k, lt, t) {   // slot k (0 = front) → { x, y, u, o }
+    const a = qAdv(lt), d = (k - a) * QS, p = along(QPATH, QL, Math.max(0, d)), u = k < 2 ? 13.5 : uAt(p[1]);
+    const moving = lt > NT.adv && lt < NT.adv + .5 && k > 0;
+    const o = { ...feel(['happy', 'hopeful', 'determined', 'happy', 'excited'][Math.floor(hash(k + 3) * 5)], t + hash(k) * 2), emote: null, seed: k * 3.1, view: 'side', flip: p[2] < 0 || (p[2] === 0 && true), boilKey: 'q' + k };
+    o.flip = p[2] <= 1 ? true : false;
+    if (Math.abs(p[2]) < 1 && d > 0) o.flip = true;
+    o.aL = 1.2 + .08 * Math.sin(t * 3 + k); o.lookX = 0; o.walk = moving ? d / 45 : null;
+    if (moving) o.dy = -Math.abs(Math.sin(d / 45 * Math.PI)) * .5;
+    return { x: p[0], y: p[1], u, o };
+  }
+  function nightClawd(lt, t) {
+    const vib = 1 + 1.6 * ease(seg(lt, NT.chug1, NT.clink + .2));
+    const o = { eyes: 'wide', mouth: 'teeth', blush: 0, emote: 'sweat', emoteK: 1, emoteAge: lt, seed: 1,
+      dx: .06 * vib * Math.sin(t * TAU * 23), rot: .015 * vib * Math.sin(t * TAU * 17), sq: .03 * vib * Math.sin(t * TAU * 11), dy: -.15 * vib * Math.abs(Math.sin(t * TAU * 9)),
+      aL: .5 + .12 * vib * Math.sin(t * TAU * 19), aR: .5 + .12 * vib * Math.sin(t * TAU * 21 + 1), lookX: .7, lookY: .1 };
+    // snatch, chug, toss
+    if (lt > NT.take - .1 && lt < NT.toss + .3) {
+      const up = backOut(seg(lt, NT.take - .1, NT.take + .08)), toMouth = ease(seg(lt, NT.take + .1, NT.chug)), down = ease(seg(lt, NT.chug1, NT.toss)), throwK = seg(lt, NT.toss, NT.toss + .25);
+      o.aR = lerp(lerp(o.aR, .2, up), 1.25, toMouth * (1 - down)) + (throwK > 0 ? 1.2 * Math.sin(throwK * Math.PI) : 0);
+      if (lt > NT.chug && lt < NT.chug1) { o.eyes = 'closed'; o.mouth = 'O'; o.rot = (o.rot || 0) - .06; o.lookX = 0; }
+    }
+    // the next cup: a stare, and a twitch
+    if (lt > NT.adv + .4) { o.lookX = .8; o.lookY = .3; if ((lt > NT.twitch && lt < NT.twitch + .1) || (lt > NT.twitch + .4 && lt < NT.twitch + .48)) o.eyes = ['wide', 'narrow']; }
+    if (lt > NT.note) { o.lookX = .6; o.lookY = -1; }
+    return o;
+  }
+  function night(t, lt, dur) {
+    const [cx, cy, lz] = kf(lt, [[0, [1010, 700, Math.log(1.12)]], [NT.pull, [1060, 700, Math.log(1.2)]], [NT.pull1, [1580, 860, Math.log(.56)]], [dur, [1600, 860, Math.log(.54)]]]);
+    camBegin(cx + 6 * Math.sin(t * .8), cy, Math.exp(lz));
+    const cl = nightClawd(lt, t);
+    // the set, plus the lamp, the tower of empties and cups everywhere
+    layer2(() => {
+      room(t); nightWindow(t); whiteboard(t); machine(9.4); sack(t); lamp(t);
+      for (const [x, y, r] of LITTER) { T2.push(); T2.tr(x, y); T2.rot(r > 1.2 ? 1.57 : 0); cup(0, 0, 30, { level: 0 }); T2.pop(); }
+      const n = TOWER.length + (lt > NT.clink ? 1 : 0);
+      for (let i = 0; i < Math.min(n, TOWER.length); i++) { const [x, y, r] = TOWER[i]; T2.push(); T2.tr(x, y); T2.rot(r + .03 * Math.sin(t * 20 + i) * (lt > NT.clink ? Math.exp(-(lt - NT.clink) * 4) : 0)); cup(0, 0, 32, { level: 0 }); T2.pop(); }
+      if (lt > NT.clink) cup(652, 855 - 8 * 33, 32, { level: 0, tilt: .2 * Math.exp(-(lt - NT.clink) * 5) * Math.sin((lt - NT.clink) * 30) });
+    });
+    note(t, 1400, 330, 15 + NT.note);
+    // the queue: minis behind Clawd's line first, then Clawd, then the rest
+    const Q = []; for (let k = 0; k < QN; k++) { if (k === 0 && lt > NT.adv) continue; Q.push(queueMini(k, lt, t)); }
+    // the first mini, having delivered, steps back and waits proudly
+    if (lt > NT.adv) { const k2 = ease(seg(lt, NT.adv, NT.adv + .4)); Q.push({ x: lerp(1195, 1120, k2), y: lerp(888, 1060, k2), u: 13.5, o: { ...feel('proud', t), emote: null, view: 'front', boilKey: 'q0b' } }); }
+    for (const q of Q) if (lt > NT.note) { q.o.lookY = -1; q.o.lookX = q.o.view === 'front' ? .5 : 0; }
+    const front = Q.filter(q => q.y >= GY), back = Q.filter(q => q.y < GY);
+    const drawQ = list => layer2(g => {
+      list.sort((a, b) => a.y - b.y);
+      for (const q of list) {
+        mini2d(g, q.x, q.y, q.u, q.o, q.o.boilKey);
+        if (q.o.view === 'side') { const tip = armTip(q.x, q.y, q.u, q.o, 'L'); boilSeed('qc' + q.o.boilKey); cup(tip[0], tip[1] - q.u * 1.1, q.u * 2.6, { level: 1, steam: 1, key: q.o.boilKey }); }
+      }
+    }, false, list === front ? 'front' : 'back');
+    drawQ(back);
+    clawd(MX, GY, MU, { ...cl, boilKey: 'main' });
+    drawQ(front);
+    // Clawd's cup: from the front mini's hands, to the mouth, onto the tower
+    if (lt > NT.take - .05 && lt < NT.clink) {
+      const q0 = queueMini(0, Math.min(lt, NT.adv - .01), t), wt = armTip(q0.x, q0.y, q0.u, q0.o, 'L'), ct = armTip(MX, GY, MU, cl, 'R');
+      let p = [wt[0], wt[1] - q0.u * 1.1], tilt = 0;
+      const k = ease(seg(lt, NT.take - .05, NT.take + .08)); p = [lerp(p[0], ct[0] + 4, k), lerp(p[1], ct[1] - 16, k)];
+      if (lt > NT.chug - .1 && lt < NT.chug1) tilt = -1.2 * ease(seg(lt, NT.chug - .1, NT.chug + .1));
+      if (lt > NT.toss) { const f = seg(lt, NT.toss, NT.clink), a = arcPt([ct[0], ct[1] - 16], [652, 855 - 8 * 33], 180, f); p = a; tilt = f * 6; }
+      boilSeed('ncup'); cup(p[0], p[1], 34, { level: lt > NT.chug1 ? 0 : 1, steam: lt < NT.chug ? 1 : 0, tilt, key: 'nheld' });
+    }
+    if (lt > NT.clink && lt < NT.clink + .4) crackMark(652, 855 - 8 * 33 - 20, 30, seg(lt, NT.clink, NT.clink + .4), 'clink');
+    const ls = toScreen(LAMP[0] + 330, LAMP[1] - 60), ns = toScreen(1400, 330), z = Math.exp(lz);
+    camEnd();
+    nightOverlay([[ls[0], ls[1], 560 * z, 1], [ns[0], ns[1], 260 * z, ease(seg(lt, NT.note, NT.note + .2))]], .74);
+    boilSeed('transition');
+    if (lt < .3) wipe2(.5 + lt / .6, [C.deskDk, C.desk]);
+    if (lt > NT.fade) layer2(g => { g.fillStyle = PAL.ink; g.globalAlpha = ease(seg(lt, NT.fade, dur - .05)); g.fillRect(0, 0, W, H); g.globalAlpha = 1; }, true, 'fade');
+  }
+
+  shots([[0, film], [15, night]]);
 })();
