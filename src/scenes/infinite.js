@@ -487,13 +487,13 @@
       const X = sx, Y = st.y; D.push([st.pose.sortY || Y, () => clawd(X, Y, u * grow, o)]);
     }
     D.sort((a, b) => a[0] - b[0]);
-    for (const [, f] of D) f();
+    for (const [, f] of D) { if (window.PROF_NOMINI && D.length > 5) break; f(); }
 
     // puffs where minis pop out
     for (let i = 0; i < M.length; i++) {
       const t0 = ts(i), k = seg(t, t0, t0 + .38); if (k <= 0 || k >= 1) continue;
       const pi = parentOf(i), src = pi < 0 ? armTip(MX, GY, MU, cl, 'R') : (() => { const p = posAt(pi, t0); return p ? [p.x, p.y - 6 * uAt(p.y)] : [MX, GY]; })();
-      puff(src[0], src[1], i < 4 ? 70 : 34 + 30 * hash(i), k, i);
+      if (!window.PROF_NOPUFF) puff(src[0], src[1], i < 4 ? 70 : 34 + 30 * hash(i), k, i);
     }
 
     // knuckle cracks at the arm tips
