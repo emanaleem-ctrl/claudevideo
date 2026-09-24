@@ -56,12 +56,12 @@ crack(T.cr1, .55); crack(T.cr2, .6);          // knuckles
 ding(T.idea, 1568, .18, 5);                   // idea
 // spawns: the first four clearly, then a snowball of pops
 swarm.ts.forEach((t, i) => { if (i < 4) pop(t, [480, 560, 640, 700][i], .55); else pop(t, 380 + 700 * rnd(), Math.max(.06, .3 - i * .0012)); });
-bustle(5.6, T.ding, 50, 1);
+bustle(5.6, T.ding, 70, 1.8);
 add(4.8, .8, x => 0, 0);
 ding(T.ding, 1760, .45, 1.6);                 // the cup is full: DING, then silence
 ding(T.ding, 2637, .15, 2.4);
-for (let t = T.walk0 + .05, k = 0; t < T.walk1; t += .19, k++) tick(t, .09, 1400 + 200 * (k % 2));   // tiny footsteps
-slurp(T.sip + .02);
+for (let t = T.walk0 + .05, k = 0; t < T.walk1; t += .19, k++) tick(t, .45, 1400 + 200 * (k % 2));   // tiny footsteps
+slurp(T.sip + .02, .42, 3.5);
 pop(T.bubble, 700, .4); ding(T.bubble + .12, 2093, .12, 4);   // sugar?
 thump(T.freeze, .8); ding(T.freeze, 220, .12, 6);             // freeze
 whoosh(T.go - .05, .35, .35, 600, 3000);
