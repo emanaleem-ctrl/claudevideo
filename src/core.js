@@ -184,6 +184,7 @@ function centred(pts, draw) {
 }
 function paint(pts, o = {}) { centred(pts, (P) => paintAt(P, o)); }
 function paintAt(pts, o) {
+  if (window.LITE && o.fill) { o = { ...o }; if (!o.wash) { o.wash = o.fill; o.washOp = (o.fillOp ?? 170) * .6; } o.fill = null; }
   if (o.wash || o.fill || o.hatch) {
     if (o.wash) brush.wash(o.wash, o.washOp ?? 255); else brush.noWash();
     if (o.fill) { brush.fill(o.fill, o.fillOp ?? 170); brush.fillBleed(o.bleed ?? .1); brush.fillTexture(o.tex ?? .4, o.border ?? .35); } else brush.noFill();

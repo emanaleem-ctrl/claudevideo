@@ -1,2 +1,5 @@
 node_modules
 out/
+out/
+assets/*.wav
+assets/swarm.json
