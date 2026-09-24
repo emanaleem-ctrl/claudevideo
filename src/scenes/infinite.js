@@ -21,8 +21,8 @@
   // ---------- camera ----------
   const CAMK = [
     [0, [960, 600, 1]], [2.6, [990, 610, 1.05]], [3.2, [1090, 640, 1]], [4.4, [1160, 660, .95]],
-    [6.5, [950, 820, .45]], [7.5, [880, 830, .46]], [9.2, [2150, 720, .6]], [9.45, [2170, 720, .61]],
-    [10.3, [1650, 720, .75]], [11.9, [1400, 700, .83]], [12.08, [1380, 700, .85]], [12.5, [1090, 690, 1.25]],
+    [6.5, [950, 820, .45]], [7.5, [880, 830, .46]], [8.7, [1900, 780, .55]], [9.3, [2400, 760, .95]], [9.5, [2410, 760, .97]],
+    [10.2, [2150, 760, .85]], [11.8, [1330, 720, .9]], [12.08, [1300, 710, .92]], [12.5, [1090, 690, 1.25]],
     [13.9, [1110, 690, 1.3]], [14.1, [1150, 790, .6]], [15, [1170, 790, .6]]
   ].map(([t, v]) => [t, [v[0], v[1], Math.log(v[2])]]);
   const camAt = t => { const [x, y, lz] = kf(t, CAMK); return [x + 12 * Math.sin(t * .7), y + 6 * Math.sin(t * .9 + 1), Math.exp(lz)]; };
@@ -43,89 +43,158 @@
     return [x + (o.dx || 0) * u + lx * c - ly * s, y + (o.dy || 0) * u + lx * s + ly * c];
   }
 
+
+  // ---------- a 2D ink painter ----------
+  // While G2 (a 2D canvas context) is set, paint2()/ink2() draw flat colour and a wobbly double ink line on it instead
+  // of through p5.brush. The static set (room, machine, board, sack) and the wipes use it: on a software GPU, every
+  // large p5.brush shape costs about a second a frame. Otherwise they are plain paint()/inkLine().
+  let G2 = null;
+  const INKW = { ink: 3.2, inkfine: 1.9, dry: 5 };
+  const T2 = {
+    push() { push(); if (G2) G2.save(); }, pop() { pop(); if (G2) G2.restore(); },
+    tr(x, y) { translate(x, y); if (G2) G2.translate(x, y); }, rot(a) { rotate(a); if (G2) G2.rotate(a); },
+  };
+  function path2(pts, closed, curv) {
+    const g = G2, P = pts.map(([x, y]) => [x + jit(.8), y + jit(.8)]);
+    g.beginPath();
+    if (curv && P.length > 2) {
+      const n = P.length, mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      if (closed) { const m0 = mid(P[n - 1], P[0]); g.moveTo(...m0); for (let i = 0; i < n; i++) { const m = mid(P[i], P[(i + 1) % n]); g.quadraticCurveTo(P[i][0], P[i][1], m[0], m[1]); } }
+      else { g.moveTo(...P[0]); for (let i = 1; i < n - 1; i++) { const m = mid(P[i], P[i + 1]); g.quadraticCurveTo(P[i][0], P[i][1], m[0], m[1]); } g.lineTo(...P[n - 1]); }
+    } else { P.forEach((p, i) => i ? g.lineTo(...p) : g.moveTo(...p)); if (closed) g.closePath(); }
+  }
+  function stroke2(w, col) {
+    const g = G2; g.strokeStyle = col; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.lineWidth = w; g.stroke(); g.globalAlpha *= .3; g.lineWidth = w * 1.7; g.stroke(); g.globalAlpha /= .3;
+  }
+  function paint2(pts, o = {}) {
+    if (!G2) return paint(pts, o);
+    const g = G2, col = o.wash || o.fill, op = o.wash ? (o.washOp ?? 255) : (o.fillOp ?? 170) * .6;
+    if (col) { path2(pts, true, o.curv); g.globalAlpha = op / 255; g.fillStyle = col; g.fill(); g.globalAlpha = 1; }
+    if (o.ink !== null) { path2(pts, true, o.curv); stroke2(INKW[o.br || 'ink'] * (o.sw ?? 1), o.ink || PAL.ink); }
+  }
+  function ink2(pts, sw = 1, col = PAL.ink, br = 'ink', curv = .5) {
+    if (!G2) return inkLine(pts, sw, col, br, curv);
+    path2(pts, false, curv); stroke2((INKW[br] || 3) * sw, col);
+  }
+  // a painted layer: fn draws on a clear full-frame 2D canvas (in world space when a camera is active), which is then
+  // laid over everything painted so far
+  const LGS = {};   // one canvas per layer: p5 caches a graphics' texture, so reusing one canvas twice a frame shows stale pixels
+  function layer2(fn, screen = false, slot = 'bg') {
+    if (!LGS[slot]) { LGS[slot] = createGraphics(W, H); LGS[slot].pixelDensity(1); }
+    const LG = LGS[slot], g = LG.drawingContext;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H);
+    if (CAM && !screen) { const z = CAM.zoom; g.setTransform(z, 0, 0, z, W / 2 - CAM.cx * z, H / 2 - CAM.cy * z); }
+    G2 = g; fn(g); G2 = null;
+    flushBrush();
+    push(); resetMatrix(); translate(-W / 2, -H / 2); image(LG, 0, 0); pop();
+  }
+  // the brush wipe (see brushWipe in timeline.js), on the 2D layer
+  function wipe2(p, cols) {
+    if (p <= 0 || p >= 1) return;
+    layer2(g => {
+      const [c1, c2] = cols, n = 5, bh = (H + 420) / n + 40;
+      g.translate(W / 2, H / 2); g.rotate(-.1); g.translate(-W / 2, -H / 2);
+      for (let i = 0; i < n; i++) {
+        const y0 = -230 + i * (H + 420) / n, d = [0, .14, .06, .18, .1][i];
+        const q = p < .5 ? easeOut(clamp((p * 2 - d) / (1 - d))) : ease(clamp(((p - .5) * 2 - d) / (1 - d)));
+        const x0 = p < .5 ? -300 : lerp(-300, W + 400, q), x1 = p < .5 ? lerp(-300, W + 400, q) : W + 400;
+        if (x1 - x0 < 30) continue;
+        boilSeed('wipe' + i);
+        const pts = [], rag = k => 40 + 50 * hash(i * 31 + k) + jit(12);
+        for (let k = 0; k <= 8; k++) pts.push([lerp(x0, x1, k / 8), y0 + Math.sin(k * .9 + i) * 14 + jit(5)]);
+        for (let k = 1; k < 9; k++) pts.push([x1 + rag(k) - 40, y0 + bh * k / 9]);
+        for (let k = 8; k >= 0; k--) pts.push([lerp(x0, x1, k / 8), y0 + bh + Math.sin(k * .8 + i * 2) * 14 + jit(5)]);
+        if (p >= .5) for (let k = 8; k > 0; k--) pts.push([x0 - rag(k + 20) + 40, y0 + bh * k / 9]);
+        paint2(pts, { wash: i % 2 ? c1 : c2, ink: null });
+        for (let k = 0; k < 7; k++) { const yy = y0 + bh * (k + .5) / 7, xa = x0 + (x1 - x0) * .1 * hash(k + i * 9), xb = x1 - 60 - 200 * hash(k + i * 5); if (xb > xa) ink2([[xa, yy], [xb, yy + jit(6)]], 1.4, i % 2 ? c2 : PAL.cream, 'dry', .3); }
+      }
+    }, true, 'wipe');
+  }
+
   // ---------- props ----------
   // the coffee cup: (x, y) = its centre, s = its height. level 0..1 of coffee, steam 0..1, tilt in radians
   function cup(x, y, s, o = {}) {
     const sw = clamp(s / 40, .35, .9);
-    push(); translate(x, y); rotate(o.tilt || 0);
+    T2.push(); T2.tr(x, y); T2.rot(o.tilt || 0);
     const w = s * .9, h = s;
-    paint(ellPts(w * .55, -h * .05, s * .28, s * .26, 12), { ink: PAL.ink, sw: sw * .9 });   // handle
-    paint([[-w / 2, -h / 2], [w / 2, -h / 2], [w * .4, h / 2], [-w * .4, h / 2]], { wash: C.cup, ink: PAL.ink, sw, curv: .15 });
-    paint(ellPts(0, -h / 2, w / 2, s * .12, 14), { wash: (o.level ?? 1) > .05 ? C.coffee : mixCol(C.cup, PAL.ink, .15), ink: PAL.ink, sw: sw * .8 });
-    paint(rectPts(-w * .43, -h * .05, w * .86, h * .16), { wash: PAL.rose, washOp: 200, ink: null });   // a stripe
-    pop();
+    paint2(ellPts(w * .55, -h * .05, s * .28, s * .26, 12), { ink: PAL.ink, sw: sw * .9 });   // handle
+    paint2([[-w / 2, -h / 2], [w / 2, -h / 2], [w * .4, h / 2], [-w * .4, h / 2]], { wash: C.cup, ink: PAL.ink, sw, curv: .15 });
+    paint2(ellPts(0, -h / 2, w / 2, s * .12, 14), { wash: (o.level ?? 1) > .05 ? C.coffee : mixCol(C.cup, PAL.ink, .15), ink: PAL.ink, sw: sw * .8 });
+    paint2(rectPts(-w * .43, -h * .05, w * .86, h * .16), { wash: PAL.rose, washOp: 200, ink: null });   // a stripe
+    T2.pop();
     const st = o.steam ?? 0;
     if (st > .02) for (let i = 0; i < 3; i++) {
       boilSeed('steam' + i + (o.key || ''));
       const ph = frac(T * .9 + i / 3), sx = x + (i - 1) * s * .28, sy = y - s * (.75 + ph * 1.2);
-      inkLine([[sx, sy + s * .5], [sx + s * .12 * Math.sin(T * 4 + i), sy + s * .25], [sx - s * .1, sy]], sw * 1.1 * st * Math.sin(ph * Math.PI), mixCol(PAL.cream, PAL.ink, .25), 'inkfine', .6);
+      ink2([[sx, sy + s * .5], [sx + s * .12 * Math.sin(T * 4 + i), sy + s * .25], [sx - s * .1, sy]], sw * 1.1 * st * Math.sin(ph * Math.PI), mixCol(PAL.cream, PAL.ink, .25), 'inkfine', .6);
     }
   }
   function bean(x, y, s, rot = 0) {
-    push(); translate(x, y); rotate(rot);
-    paint(ellPts(0, 0, s, s * .7, 12), { wash: C.bean, ink: PAL.ink, sw: clamp(s / 20, .3, .7) });
-    inkLine([[-s * .6, -s * .1], [0, s * .12], [s * .6, -s * .1]], clamp(s / 25, .25, .6), C.beanLt, 'inkfine', .5);
-    pop();
+    T2.push(); T2.tr(x, y); T2.rot(rot);
+    paint2(ellPts(0, 0, s, s * .7, 12), { wash: C.bean, ink: PAL.ink, sw: clamp(s / 20, .3, .7) });
+    ink2([[-s * .6, -s * .1], [0, s * .12], [s * .6, -s * .1]], clamp(s / 25, .25, .6), C.beanLt, 'inkfine', .5);
+    T2.pop();
   }
   function sugar(x, y, s, key = 'sugar') {   // a sugar cube, drawn as a flat icon: top, left and right faces
     boilSeed(key);
     const h = s * .5, top = [[x, y - s], [x + s, y - s + h], [x, y - s + 2 * h], [x - s, y - s + h]];
-    paint([[x - s, y - s + h], [x, y - s + 2 * h], [x, y + s], [x - s, y + s - h]], { wash: '#EFE6D4', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
-    paint([[x, y - s + 2 * h], [x + s, y - s + h], [x + s, y + s - h], [x, y + s]], { wash: '#DCD0BA', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
-    paint(top, { wash: '#FFFDF7', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
-    for (let i = 0; i < 5; i++) paint(ellPts(x + (hash(i + 3) - .5) * s, y - s + h + (hash(i + 9) - .5) * h * .8, s * .05, s * .04, 6), { wash: '#D8CCB6', ink: null });
+    paint2([[x - s, y - s + h], [x, y - s + 2 * h], [x, y + s], [x - s, y + s - h]], { wash: '#EFE6D4', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
+    paint2([[x, y - s + 2 * h], [x + s, y - s + h], [x + s, y + s - h], [x, y + s]], { wash: '#DCD0BA', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
+    paint2(top, { wash: '#FFFDF7', ink: PAL.ink, sw: clamp(s / 40, .4, 1) });
+    for (let i = 0; i < 5; i++) paint2(ellPts(x + (hash(i + 3) - .5) * s, y - s + h + (hash(i + 9) - .5) * h * .8, s * .05, s * .04, 6), { wash: '#D8CCB6', ink: null });
   }
   function puff(x, y, r, k, key) {   // a pop: a cloud that bursts and fades
     if (k <= 0 || k >= 1) return;
     boilSeed('puff' + key);
     const R = r * (.4 + .9 * easeOut(k)), P = [];
     for (let i = 0; i < 18; i++) { const a = i / 18 * TAU, b = 1 + .3 * Math.abs(Math.sin(a * 3 + key)); P.push([x + Math.cos(a) * R * b, y + Math.sin(a) * R * .75 * b]); }
-    paint(P, { wash: PAL.cream, washOp: 255 * (1 - k * k), ink: k < .6 ? PAL.ink : null, sw: clamp(r / 50, .4, 1), curv: .5 });
+    paint2(P, { wash: PAL.cream, washOp: 255 * (1 - k * k), ink: k < .6 ? PAL.ink : null, sw: clamp(r / 50, .4, 1), curv: .5 });
     if (k < .5) for (let i = 0; i < 5; i++) {
       const a = i / 5 * TAU + key, d = R * (1.2 + .6 * k);
-      inkLine([[x + Math.cos(a) * d, y + Math.sin(a) * d * .75], [x + Math.cos(a) * (d + r * .35), y + Math.sin(a) * (d + r * .35) * .75]], clamp(r / 60, .35, .9), PAL.ink, 'inkfine', 0);
+      ink2([[x + Math.cos(a) * d, y + Math.sin(a) * d * .75], [x + Math.cos(a) * (d + r * .35), y + Math.sin(a) * (d + r * .35) * .75]], clamp(r / 60, .35, .9), PAL.ink, 'inkfine', 0);
     }
   }
-  function sparkle(x, y, r, k, key = 's') { if (k > 0 && k < 1) { boilSeed('spk' + key); paint(starPts(x, y, r * backOut(k) * (1 - k * .6), .25, 4, k * 2), { wash: PAL.cream, washOp: 255 * (1 - k * k), ink: PAL.ink, sw: .5 }); } }
+  function sparkle(x, y, r, k, key = 's') { if (k > 0 && k < 1) { boilSeed('spk' + key); paint2(starPts(x, y, r * backOut(k) * (1 - k * .6), .25, 4, k * 2), { wash: PAL.cream, washOp: 255 * (1 - k * k), ink: PAL.ink, sw: .5 }); } }
   function crackMark(x, y, r, k, key) {   // knuckle crack: short strokes bursting out
     if (k <= 0 || k >= 1) return;
     boilSeed('crack' + key);
     for (let i = 0; i < 5; i++) {
       const a = -Math.PI / 2 + (i - 2) * .55, d0 = r * (.5 + .5 * k), d1 = r * (1 + .9 * easeOut(k));
-      inkLine([[x + Math.cos(a) * d0, y + Math.sin(a) * d0], [x + Math.cos(a) * d1, y + Math.sin(a) * d1]], 1.1 * (1 - k), PAL.ink, 'ink', 0);
+      ink2([[x + Math.cos(a) * d0, y + Math.sin(a) * d0], [x + Math.cos(a) * d1, y + Math.sin(a) * d1]], 1.1 * (1 - k), PAL.ink, 'ink', 0);
     }
   }
 
   // ---------- the room ----------
   function room(t) {
     boilSeed('wall');
-    paint(rectPts(-1600, -900, 5600, 1560), { wash: C.wall, ink: null });
+    paint2(rectPts(-1600, -900, 5600, 1560), { wash: C.wall, ink: null });
     boilSeed('window');   // a window, far left, only seen in the wide
-    paint(rectPts(-900, -300, 620, 560, 3), { wash: C.sky, ink: PAL.ink, sw: 1.6 });
-    paint(ellPts(-700, 180, 260, 70, 16, 4), { wash: '#E9F3F6', washOp: 220, ink: null });
-    inkLine([[-590, -300], [-590, 260]], 1.6, PAL.ink, 'ink', 0); inkLine([[-900, -20], [-280, -20]], 1.6, PAL.ink, 'ink', 0);
+    paint2(rectPts(-900, -300, 620, 560, 3), { wash: C.sky, ink: PAL.ink, sw: 1.6 });
+    paint2(ellPts(-700, 180, 260, 70, 16, 4), { wash: '#E9F3F6', washOp: 220, ink: null });
+    ink2([[-590, -300], [-590, 260]], 1.6, PAL.ink, 'ink', 0); ink2([[-900, -20], [-280, -20]], 1.6, PAL.ink, 'ink', 0);
     boilSeed('shelf');
-    paint(rectPts(2350, -90, 700, 26, 2), { wash: C.wood, ink: PAL.ink, sw: 1.2 });
-    for (let i = 0; i < 6; i++) paint(rectPts(2400 + i * 62, -90 - 110 - 30 * hash(i), 48, 110 + 30 * hash(i), 2), { wash: [PAL.rose, PAL.teal, PAL.ochre, PAL.violet, PAL.sap, PAL.indigo][i], ink: PAL.ink, sw: 1 });
+    paint2(rectPts(2350, -90, 700, 26, 2), { wash: C.wood, ink: PAL.ink, sw: 1.2 });
+    for (let i = 0; i < 6; i++) paint2(rectPts(2400 + i * 62, -90 - 110 - 30 * hash(i), 48, 110 + 30 * hash(i), 2), { wash: [PAL.rose, PAL.teal, PAL.ochre, PAL.violet, PAL.sap, PAL.indigo][i], ink: PAL.ink, sw: 1 });
     boilSeed('desk');
-    paint(rectPts(-1600, 620, 5600, 1600), { wash: C.desk, ink: null });
-    paint(rectPts(-1600, 620, 5600, 26), { wash: C.deskLt, ink: null });
+    paint2(rectPts(-1600, 620, 5600, 1600), { wash: C.desk, ink: null });
+    paint2(rectPts(-1600, 620, 5600, 26), { wash: C.deskLt, ink: null });
     for (let i = 0; i < 14; i++) {   // grain
       const y = 700 + i * 95 + 30 * hash(i), x0 = -1500 + 2400 * hash(i + 20), L = 500 + 900 * hash(i + 40);
-      inkLine([[x0, y], [x0 + L * .5, y + 8 * (hash(i + 5) - .5)], [x0 + L, y]], .7, C.deskDk, 'inkfine', .5);
+      ink2([[x0, y], [x0 + L * .5, y + 8 * (hash(i + 5) - .5)], [x0 + L, y]], .7, C.deskDk, 'inkfine', .5);
     }
-    for (let k = 0; k < 3; k++) inkLine([[-1600 + k * 1860, 622], [-1600 + (k + 1) * 1860, 622]], 1.4, PAL.ink, 'ink', 0);
+    for (let k = 0; k < 3; k++) ink2([[-1600 + k * 1860, 622], [-1600 + (k + 1) * 1860, 622]], 1.4, PAL.ink, 'ink', 0);
   }
   // the sticky note, with a coffee cup icon
   function note(t, x, y) {
     const k = seg(t, tNote, tNote + .3); if (k <= 0) return;
     const s = backOut(k) * 115, r = -.06 + .04 * spring(t, tNote + .15, 5, 14);
     boilSeed('note');
-    push(); translate(x, y); rotate(r);
-    paint(rectPts(-s, -s, 2 * s, 2 * s, 3), { wash: C.note, ink: PAL.ink, sw: 1.2 });
-    paint([[s * .55, s], [s, s * .55], [s, s]], { wash: C.noteDk, ink: PAL.ink, sw: .8 });
-    paint(ellPts(0, -s * .9, s * .1, s * .1, 10), { wash: PAL.rose, ink: PAL.ink, sw: .8 });
-    pop();
+    T2.push(); T2.tr(x, y); T2.rot(r);
+    paint2(rectPts(-s, -s, 2 * s, 2 * s, 3), { wash: C.note, ink: PAL.ink, sw: 1.2 });
+    paint2([[s * .55, s], [s, s * .55], [s, s]], { wash: C.noteDk, ink: PAL.ink, sw: .8 });
+    paint2(ellPts(0, -s * .9, s * .1, s * .1, 10), { wash: PAL.rose, ink: PAL.ink, sw: .8 });
+    T2.pop();
     if (k > .3) cup(x - 8, y + 18, s * .75, { level: 1, steam: 1, key: 'note' });
   }
   // the thought bubble with a sugar cube
@@ -133,9 +202,9 @@
     const k = seg(t, tBubble, tBubble + .25); if (k <= 0) return;
     const p = backOut(k), s = 95 * p;
     boilSeed('bubble');
-    [[x - 150, y + 150, 13], [x - 105, y + 100, 21]].forEach(([bx, by, r], i) => { if (k > i * .25) paint(ellPts(bx, by, r * p, r * p, 12), { wash: PAL.cream, ink: PAL.ink, sw: 1 }); });
+    [[x - 150, y + 150, 13], [x - 105, y + 100, 21]].forEach(([bx, by, r], i) => { if (k > i * .25) paint2(ellPts(bx, by, r * p, r * p, 12), { wash: PAL.cream, ink: PAL.ink, sw: 1 }); });
     const P = []; for (let i = 0; i < 28; i++) { const a = i / 28 * TAU, b = 1 + .12 * Math.abs(Math.sin(a * 4)); P.push([x + Math.cos(a) * s * 1.35 * b, y + Math.sin(a) * s * b]); }
-    paint(P, { wash: PAL.cream, ink: PAL.ink, sw: 1.2, curv: .5 });
+    paint2(P, { wash: PAL.cream, ink: PAL.ink, sw: 1.2, curv: .5 });
     if (k > .4) {
       sugar(x - 6, y + 4, 52 * p, 'bsugar');
       sparkle(x + 60, y - 50, 22, frac((t - tBubble) * 1.4), 'b1');
@@ -158,19 +227,19 @@
     const a = act(t);
     boilSeed('scaffold');
     // ladder + platform + posts
-    for (const x of [1932, 1992]) inkLine([[x, 865], [x, 318]], 1.6, C.woodDk, 'ink', 0);
-    for (let i = 0; i < 11; i++) inkLine([[1932, 850 - i * 50], [1992, 850 - i * 50]], 1.2, C.woodDk, 'ink', 0);
-    paint(rectPts(1920, 318, 290, 22, 2), { wash: C.wood, ink: PAL.ink, sw: 1.2 });
-    inkLine([[2190, 340], [2190, 865]], 1.6, C.woodDk, 'ink', 0);
+    for (const x of [1932, 1992]) ink2([[x, 865], [x, 318]], 1.6, C.woodDk, 'ink', 0);
+    for (let i = 0; i < 11; i++) ink2([[1932, 850 - i * 50], [1992, 850 - i * 50]], 1.2, C.woodDk, 'ink', 0);
+    paint2(rectPts(1920, 318, 290, 22, 2), { wash: C.wood, ink: PAL.ink, sw: 1.2 });
+    ink2([[2190, 340], [2190, 865]], 1.6, C.woodDk, 'ink', 0);
     // hopper full of beans
     boilSeed('hopper');
-    paint([[2150, 250], [2330, 250], [2250, 385], [2225, 385]], { wash: C.metal, ink: PAL.ink, sw: 1.2 });
+    paint2([[2150, 250], [2330, 250], [2250, 385], [2225, 385]], { wash: C.metal, ink: PAL.ink, sw: 1.2 });
     for (let i = 0; i < 9; i++) bean(2175 + i * 18, 258 + 6 * hash(i), 11, hash(i + 4) * 3);
     // ramps
     boilSeed('ramps');
-    inkLine([[2215, 425], [2525, 486]], 2.2, C.woodDk, 'ink', 0);
-    inkLine([[2530, 508], [2275, 586]], 2.2, C.woodDk, 'ink', 0);
-    for (const [x, y] of [[2515, 486], [2290, 586]]) inkLine([[x, y], [x, 865]], 1.1, C.woodDk, 'inkfine', 0);
+    ink2([[2215, 425], [2525, 486]], 2.2, C.woodDk, 'ink', 0);
+    ink2([[2530, 508], [2275, 586]], 2.2, C.woodDk, 'ink', 0);
+    for (const [x, y] of [[2515, 486], [2290, 586]]) ink2([[x, y], [x, 865]], 1.1, C.woodDk, 'inkfine', 0);
     // beans rolling down the ramps
     if (t < tDing + .2) for (let k = 0; k < 3; k++) {
       boilSeed('rb' + k);
@@ -179,27 +248,27 @@
     }
     // grinder with crank
     boilSeed('grinder');
-    paint(rrPts(2235, 640, 170, 160, 18, 2), { wash: PAL.rose, ink: PAL.ink, sw: 1.3 });
-    paint(ellPts(2320, 700, 38, 38, 16), { wash: C.cream || PAL.cream, ink: PAL.ink, sw: 1 });
-    const ga = a * 5; inkLine([[2320, 700], [2320 + 30 * Math.cos(ga), 700 + 30 * Math.sin(ga)]], 1.2, PAL.ink, 'ink', 0);
-    for (const x of [2250, 2390]) inkLine([[x, 800], [x, 865]], 1.4, PAL.ink, 'ink', 0);
+    paint2(rrPts(2235, 640, 170, 160, 18, 2), { wash: PAL.rose, ink: PAL.ink, sw: 1.3 });
+    paint2(ellPts(2320, 700, 38, 38, 16), { wash: C.cream || PAL.cream, ink: PAL.ink, sw: 1 });
+    const ga = a * 5; ink2([[2320, 700], [2320 + 30 * Math.cos(ga), 700 + 30 * Math.sin(ga)]], 1.2, PAL.ink, 'ink', 0);
+    for (const x of [2250, 2390]) ink2([[x, 800], [x, 865]], 1.4, PAL.ink, 'ink', 0);
     const ca = a * 4.2, hx = CRX + 36 * Math.cos(ca), hy = CRY + 36 * Math.sin(ca);
-    inkLine([[CRX + 20, CRY], [CRX, CRY], [hx, hy]], 1.6, PAL.ink, 'ink', 0);
-    paint(ellPts(hx, hy, 8, 8, 8), { wash: PAL.ochre, ink: PAL.ink, sw: .8 });
+    ink2([[CRX + 20, CRY], [CRX, CRY], [hx, hy]], 1.6, PAL.ink, 'ink', 0);
+    paint2(ellPts(hx, hy, 8, 8, 8), { wash: PAL.ochre, ink: PAL.ink, sw: .8 });
     // pipe to the spout
     boilSeed('pipe');
-    paint([[2300, 800], [2330, 800], [2330, 790], [SPX + 14, 790], [SPX + 14, 815], [SPX - 14, 815], [SPX - 14, 804], [2300, 804]], { wash: C.metal, ink: PAL.ink, sw: 1 });
+    paint2([[2300, 800], [2330, 800], [2330, 790], [SPX + 14, 790], [SPX + 14, 815], [SPX - 14, 815], [SPX - 14, 804], [2300, 804]], { wash: C.metal, ink: PAL.ink, sw: 1 });
     // hamster wheel on a stand, belted to the grinder
     boilSeed('wheel');
-    inkLine([[WX, WY], [WX - 80, 865]], 1.8, C.woodDk, 'ink', 0); inkLine([[WX, WY], [WX + 80, 865]], 1.8, C.woodDk, 'ink', 0);
-    inkLine([[WX, WY - 12], [2320, 688]], .9, PAL.ink, 'inkfine', 0); inkLine([[WX, WY + 12], [2320, 712]], .9, PAL.ink, 'inkfine', 0);
-    paint(ellPts(WX, WY, WR, WR, 32), { wash: '#F7E7C4', washOp: 150, ink: PAL.ink, sw: 1.6 });
-    const wa = -a * 2.6; for (let i = 0; i < 6; i++) { const q = wa + i * TAU / 6; inkLine([[WX, WY], [WX + Math.cos(q) * WR, WY + Math.sin(q) * WR]], .9, C.woodDk, 'inkfine', 0); }
-    paint(ellPts(WX, WY, 12, 12, 10), { wash: C.metalDk, ink: PAL.ink, sw: .8 });
+    ink2([[WX, WY], [WX - 80, 865]], 1.8, C.woodDk, 'ink', 0); ink2([[WX, WY], [WX + 80, 865]], 1.8, C.woodDk, 'ink', 0);
+    ink2([[WX, WY - 12], [2320, 688]], .9, PAL.ink, 'inkfine', 0); ink2([[WX, WY + 12], [2320, 712]], .9, PAL.ink, 'inkfine', 0);
+    paint2(ellPts(WX, WY, WR, WR, 32), { wash: '#F7E7C4', washOp: 150, ink: PAL.ink, sw: 1.6 });
+    const wa = -a * 2.6; for (let i = 0; i < 6; i++) { const q = wa + i * TAU / 6; ink2([[WX, WY], [WX + Math.cos(q) * WR, WY + Math.sin(q) * WR]], .9, C.woodDk, 'inkfine', 0); }
+    paint2(ellPts(WX, WY, 12, 12, 10), { wash: C.metalDk, ink: PAL.ink, sw: .8 });
     // the drip and the tiny cup
     boilSeed('drip');
     const lvl = seg(t, tFill, tDing);
-    if (t > tFill - .3 && t < tDing) { const d = frac(a * 2.4); paint(ellPts(SPX, lerp(820, 842, d), 4, 6, 8), { wash: C.coffee, ink: null }); }
+    if (t > tFill - .3 && t < tDing) { const d = frac(a * 2.4); paint2(ellPts(SPX, lerp(820, 842, d), 4, 6, 8), { wash: C.coffee, ink: null }); }
     if (t < tPick) cup(SPX, CUPY, 34, { level: lvl, steam: seg(t, tDing - .2, tDing + .1), key: 'm' });
     if (t > tDing) { glowless(t); }
   }
@@ -207,21 +276,21 @@
 
   function whiteboard(t) {
     boilSeed('board');
-    for (const x of [-440, -60]) inkLine([[x, 740], [x - 20 * Math.sign(x + 250), 850]], 1.6, C.woodDk, 'ink', 0);
-    paint(rectPts(-480, 500, 460, 260, 2), { wash: C.board, ink: PAL.ink, sw: 1.4 });
+    for (const x of [-440, -60]) ink2([[x, 740], [x - 20 * Math.sign(x + 250), 850]], 1.6, C.woodDk, 'ink', 0);
+    paint2(rectPts(-480, 500, 460, 260, 2), { wash: C.board, ink: PAL.ink, sw: 1.4 });
     // the plan: boxes, arrows, a cup at the end (no words)
     const bx = [[-450, 560], [-330, 640], [-200, 560]];
-    bx.forEach(([x, y], i) => paint(rectPts(x, y, 80, 55, 2), { ink: [PAL.indigo, PAL.rose, PAL.teal][i], sw: .9 }));
-    inkLine([[-370, 600], [-340, 640]], .9, PAL.indigo, 'inkfine', 0); inkLine([[-250, 660], [-200, 615]], .9, PAL.rose, 'inkfine', 0);
-    inkLine([[-120, 590], [-90, 590]], .9, PAL.teal, 'inkfine', 0);
+    bx.forEach(([x, y], i) => paint2(rectPts(x, y, 80, 55, 2), { ink: [PAL.indigo, PAL.rose, PAL.teal][i], sw: .9 }));
+    ink2([[-370, 600], [-340, 640]], .9, PAL.indigo, 'inkfine', 0); ink2([[-250, 660], [-200, 615]], .9, PAL.rose, 'inkfine', 0);
+    ink2([[-120, 590], [-90, 590]], .9, PAL.teal, 'inkfine', 0);
     cup(-65, 600, 32, { level: 1 });
-    inkLine([[-440, 700], [-400, 690], [-350, 715], [-290, 700], [-250, 720]], .7, PAL.ink, 'inkfine', .6);
-    inkLine([[-200, 690], [-150, 700], [-100, 685]], .7, PAL.ink, 'inkfine', .6);
+    ink2([[-440, 700], [-400, 690], [-350, 715], [-290, 700], [-250, 720]], .7, PAL.ink, 'inkfine', .6);
+    ink2([[-200, 690], [-150, 700], [-100, 685]], .7, PAL.ink, 'inkfine', .6);
   }
   function sack(t) {
     boilSeed('sack');
-    paint([[-800, 1520], [-820, 1400], [-760, 1310], [-690, 1290], [-610, 1300], [-560, 1360], [-540, 1470], [-570, 1530]], { wash: C.sack, ink: PAL.ink, sw: 1.4, curv: .4 });
-    inkLine([[-770, 1320], [-720, 1340], [-640, 1330], [-590, 1310]], 1.2, PAL.ink, 'ink', .5);
+    paint2([[-800, 1520], [-820, 1400], [-760, 1310], [-690, 1290], [-610, 1300], [-560, 1360], [-540, 1470], [-570, 1530]], { wash: C.sack, ink: PAL.ink, sw: 1.4, curv: .4 });
+    ink2([[-770, 1320], [-720, 1340], [-640, 1330], [-590, 1310]], 1.2, PAL.ink, 'ink', .5);
     for (let i = 0; i < 16; i++) bean(-760 + 200 * hash(i + 50), 1300 + 30 * hash(i + 60) - 20 * Math.sin(hash(i + 50) * Math.PI), 13, hash(i) * 6);
     for (let i = 0; i < 10; i++) bean(-560 + 140 * hash(i + 80), 1500 + 50 * hash(i + 90), 13, hash(i + 3) * 6);
   }
@@ -357,10 +426,9 @@
     o.hat = P.hat || m.hat || null;
     if (P.sleep) { Object.assign(o, { rot: -Math.PI / 2 + .05, dy: -5, eyes: 'closed', mouth: 'o', aL: .2, aR: .2, view: 'front', walk: null, sq: 0 }); }
     const carry = P.carry || m.carry;
-    if (carry === 'bean' && o.view !== 'back') { o.aL = 1.45; o.aR = 1.45; o.draw = (u2) => bean(o.view === 'side' ? .6 * u2 : 0, -9.1 * u2, 1.25 * u2, .3); }
-    if (carry === 'bean' && o.view === 'back') o.draw = (u2) => bean(0, -8.9 * u2, 1.2 * u2, -.2);
-    if (P.pointer) o.armL = (u2, sw) => inkLine([[0, 0], [4.5 * u2, 0]], sw * 1.1, C.woodDk, 'ink', 0);
-    if (P.wrench) o.armR = (u2, sw) => { paint(rectPts(0, -.25 * u2, 2.4 * u2, .5 * u2), { wash: C.metal, ink: PAL.ink, sw: sw * .6 }); paint(ellPts(2.6 * u2, 0, .6 * u2, .6 * u2, 10), { wash: C.metal, ink: PAL.ink, sw: sw * .6 }); };
+    if (carry === 'bean') { o.carryBean = true; if (o.view !== 'back') { o.aL = 1.45; o.aR = 1.45; } }
+    if (P.pointer) o.armL2 = 'pointer';
+    if (P.wrench) o.armR2 = 'wrench';
     // hopping out of the puff
     if (P.hop != null) { o.sq = -.2 * Math.sin(P.hop * Math.PI); o.aL = 1.2; o.aR = 1.2; o.eyes = 'wide'; o.mouth = 'o'; o.walk = null; }
     // silence: everyone stops and watches the cup go by
@@ -373,7 +441,6 @@
       if (m.job === 'ladder') { o.view = 'back'; }
       if (m.job === 'wheel') { o.view = 'side'; o.walk = 0; }
       if (m.job === 'audience') { o.view = st.x < -240 ? 'qback' : 'qback'; o.flip = false; }
-      o.draw = carry === 'bean' ? o.draw : null;
       if (carry === 'bean') { o.aL = 1.45; o.aR = 1.45; }
       // the freeze: sugar?! eyes wide, a take
       if (t > tFreeze + .08 * m.h) {
@@ -391,7 +458,7 @@
 
   // the walker (mini 0) after the ding: picks up the cup, carries it over, hands it up, gets it back, runs off
   function walker(t, st) {
-    const u = 12.5;
+    const u = 14;
     let x = st.x, y = OP[1];
     const o = { ...feel('determined', t), emote: null, boilKey: 'm0', seed: 3, view: 'side', flip: true };
     if (t < tPick) { o.aL = -.2 + .5 * Math.sin(t * 6); }
@@ -446,7 +513,7 @@
       else Object.assign(o, turn(t, tSip1, tSip1 + .16, .25, 0));
       if (o.view === 'side') {
         const reach = ease(seg(t, tTurn + .1, tTake)), lift = ease(seg(t, tTake + .12, tSip)), lower = ease(seg(t, tSip1 - .15, tSip1));
-        o.aL = lerp(lerp(.2, -.05, reach), .95, lift * (1 - lower)); o.lookX = 0; o.lookY = .2;
+        o.aL = lerp(lerp(.2, -.05, reach), 1.25, lift * (1 - lower)); o.lookX = 0; o.lookY = .2;
         if (t > tSip - .05 && t < tSip1 - .1) { o.rot = (o.rot || 0) - .08; o.sq = (o.sq || 0) - .04; }
       }
     }
@@ -457,44 +524,169 @@
     return o;
   }
 
+  // ---------- mini Clawds on a 2D ink layer ----------
+  // The same design as clawd() (10u × 6u body, four legs, two nubs, slit eyes, the same views, eyes, mouths and
+  // emotes the swarm uses), painted with flat colour and a wobbly double ink line that boils at BOIL fps.
+  
+  const MV = {
+    front: { L: -5, R: 5, face: [0, 1, [-1, 1]], legs: [[-4, 0], [-2, 0], [1, 0], [3, 0]], arms: [[-4.9, -1, 'L', 0], [4.9, 1, 'R', 0]] },
+    q:     { L: -5, R: 5.1, strip: [-5, -2.3], face: [1.5, .74, [-1, 1]], legs: [[-4.3, 1], [-1.8, 0], [.8, 0], [3.3, 0]], arms: [[5, 1, 'R', 2], [-4.7, -1, 'L', 1]] },
+    side:  { L: -3.1, R: 3.1, face: [1.35, .55, [1]], legs: [[-2.1, 1], [1.3, 1], [-2.6, 0], [.9, 0]], arms: [[1.6, 0, 'L', 1]] },
+    qback: { L: -5.1, R: 5, strip: [2.3, 5], face: null, legs: [[3.3, 1], [.8, 0], [-1.8, 0], [-4.3, 0]], arms: [[-5, -1, 'R', 2], [4.7, 1, 'L', 1]] },
+    back:  { L: -5, R: 5, face: null, legs: [[-4, 0], [-2, 0], [1, 0], [3, 0]], arms: [[-4.9, -1, 'R', 0], [4.9, 1, 'L', 0]] },
+  };
+  function mini2d(g, x, y, u, o, key) {
+    let s = 0; for (const c of key + '|' + BOILN) s = Math.imul(s ^ c.charCodeAt(0), 16777619) >>> 0;
+    const rn = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+    const J = u * .07, jj = () => (rn() * 2 - 1) * J;
+    const V = MV[o.view] || MV.front, sq = o.sq || 0, sm = clamp(o.smear || 0);
+    const col = o.col || tintCols(o).col, dk = o.dk || tintCols(o).dk, far = mixCol(dk, PAL.ink, .22);
+    const lw = u * .24;
+    const shape = (pts, fillC, ink = true, w = 1) => {
+      g.beginPath(); pts.forEach(([a, b], i) => i ? g.lineTo(a + jj() * .5, b + jj() * .5) : g.moveTo(a + jj() * .5, b + jj() * .5)); g.closePath();
+      if (fillC) { g.fillStyle = fillC; g.fill(); }
+      if (ink) { g.strokeStyle = PAL.ink; g.lineWidth = lw * w; g.lineJoin = 'round'; g.stroke(); g.globalAlpha = .35; g.lineWidth = lw * w * 1.6; g.stroke(); g.globalAlpha = 1; }
+    };
+    const box = (x0, y0, w, h, fillC, ink = true, lwm = 1) => shape([[x0, y0], [x0 + w / 2, y0 + jj() * .4], [x0 + w, y0], [x0 + w, y0 + h], [x0 + w / 2, y0 + h + jj() * .4], [x0, y0 + h]], fillC, ink, lwm);
+    const line = (pts, w, c = PAL.ink) => { g.beginPath(); pts.forEach(([a, b], i) => i ? g.lineTo(a + jj() * .3, b + jj() * .3) : g.moveTo(a, b)); g.strokeStyle = c; g.lineWidth = w; g.lineCap = 'round'; g.lineJoin = 'round'; g.stroke(); };
+    const ell = (cx, cy, rx, ry, fillC, ink = false) => { g.beginPath(); g.ellipse(cx, cy, Math.max(.1, rx), Math.max(.1, ry), 0, 0, TAU); if (fillC) { g.fillStyle = fillC; g.fill(); } if (ink) { g.strokeStyle = PAL.ink; g.lineWidth = lw * .7; g.stroke(); } };
+
+    if (!o.noShadow && !o.rot) { g.globalAlpha = .22; ell(x + (o.dx || 0) * u, y + u * .15, u * 5.2 * (V.R - V.L) / 10, u * .9, PAL.ink); g.globalAlpha = 1; }
+    if (sm > .05) { const d = o.flip ? 1 : -1; g.globalAlpha = .5; for (let i = 0; i < 3; i++) line([[x + d * 3 * u, y + (o.dy || 0) * u - (6.5 - i * 1.6) * u], [x + d * (6 + 2 * hash(i)) * u * sm, y + (o.dy || 0) * u - (6.5 - i * 1.6) * u]], lw * .8, col); g.globalAlpha = 1; }
+    g.save();
+    g.translate(x + (o.dx || 0) * u, y + (o.dy || 0) * u);
+    if (o.rot) g.rotate(o.rot);
+    g.scale((o.flip ? -1 : 1) * (1 + sq * .6) * (1 + sm * .35), 1 - sq);
+    const HK = h => { if (h === 'pointer') line([[0, 0], [4.5 * u, 0]], lw * .8, C.woodDk); if (h === 'wrench') { box(0, -.25 * u, 2.4 * u, .5 * u, C.metal, true, .6); ell(2.6 * u, 0, .6 * u, .6 * u, C.metal, true); } };
+    const arm = ([px, dir, which, layer]) => {
+      const a = which === 'L' ? (o.aL ?? .2) : (o.aR ?? .2), hook = which === 'L' ? o.armL2 : o.armR2;
+      g.save(); g.translate((px + dir * .55 * clamp((Math.abs(a) - .7) / .9)) * u, -4.5 * u);
+      const c = layer === 2 ? mixCol(col, dk, .4) : col;
+      if (dir === 0) { g.translate(0, .3 * u); g.rotate(.7 - a); box(-.2 * u, -.45 * u, 2.3 * u, .9 * u, c, true, .8); if (hook) { g.translate(2.1 * u, 0); HK(hook); } }
+      else { g.rotate(dir < 0 ? a : -a); box(dir < 0 ? -2.2 * u : 0, -.5 * u, 2.2 * u, u, c, true, .8); if (hook) { g.translate(dir * 2.2 * u, 0); if (dir < 0) g.scale(-1, 1); HK(hook); } }
+      g.restore();
+    };
+    V.arms.filter(a => a[3] !== 1).forEach(arm);
+    V.legs.forEach(([lx, isFar], i) => {
+      let h = 2.2, sx = 0;
+      if (o.walk != null) {
+        if (o.view === 'side') { const ph = (o.walk + [0, .5, .5, 0][i]) * TAU; sx = Math.sin(ph) * .55; h = 2.2 - Math.max(0, Math.cos(ph)) * .8; }
+        else { const ph = Math.sin((o.walk + (i % 2 ? .5 : 0)) * TAU); if (ph > 0) h = 2.2 - ph * .9; }
+      }
+      box((lx + sx) * u, -2.4 * u, u, h * u, isFar ? far : dk, true, .8);
+    });
+    const L = V.L * u, R = V.R * u;
+    box(L, -8 * u, R - L, 6 * u, col, false);
+    g.globalAlpha = .45; box(L + .2 * u, -3.7 * u, R - L - .4 * u, 1.5 * u, dk, false); g.globalAlpha = 1;
+    if (V.strip) { g.globalAlpha = .6; box(V.strip[0] * u, -8 * u, (V.strip[1] - V.strip[0]) * u, 6 * u, dk, false); g.globalAlpha = 1; }
+    box(L, -8 * u, R - L, 6 * u, null, true);
+    if (V.face) {
+      const [fcx, fw, sides] = V.face;
+      g.save(); g.translate(fcx * u, 0); g.scale(fw, 1);
+      const sqz = clamp(o.squint || 0), lx = (o.lookX || 0) * u * .5, ly = (o.lookY || 0) * u * .4, e = o.eyes || 'normal';
+      const blink = ['normal', 'look', 'wide'].includes(e) && ((T * .9 + (o.seed || 0) * 1.7) % 3.3) < .12;
+      for (const sd of sides) {
+        const ex = sd * 2.5 * u, ey = -6 * u;
+        if (sqz > .6 || blink || e === 'closed' || e === 'sleepy') { line([[ex - .7 * u, ey + .3 * u], [ex, ey + .6 * u], [ex + .7 * u, ey + .3 * u]], lw); continue; }
+        if (e === 'happy' || e === 'squeeze') { line([[ex - .8 * u, ey + .6 * u], [ex, ey - .4 * u], [ex + .8 * u, ey + .6 * u]], lw * 1.1); continue; }
+        const [w, h] = e === 'wide' || e === 'scared' || e === 'spark' ? [1.25, 2.7] : e === 'narrow' ? [1.2, .7] : [1, 2];
+        const hh = h * (1 - sqz);
+        if (e === 'determined' || e === 'angry') shape([[ex - .65 * u + lx, ey + (sd < 0 ? -.55 : -.05) * u], [ex + .65 * u + lx, ey + (sd < 0 ? -.05 : -.55) * u], [ex + .65 * u + lx, ey + u], [ex - .65 * u + lx, ey + u]], PAL.ink, false);
+        else box(ex - w / 2 * u + lx, ey - hh / 2 * u + ly, w * u, hh * u, PAL.ink, false);
+        if (u > 9 && e !== 'narrow') ell(ex + lx - w * .18 * u, ey + ly - hh * .29 * u, u * .17 * w, u * .22 * w, PAL.cream);
+      }
+      const m = o.mouth, my = -4.3 * u, mx = (V === MV.side ? 1.7 : 0) * u;
+      if (m === 'O' || m === 'open' || m === 'laugh' || m === 'wail') ell(mx, my + .2 * u, .7 * u, .8 * u, '#4A1F2A', true);
+      else if (m === 'o' || m === 'yawn') ell(mx, my, .4 * u, .45 * u, PAL.ink);
+      else if (m === 'teeth' || m === 'grin') { box(mx - 1.2 * u, my - .5 * u, 2.4 * u, .9 * u, PAL.cream, true, .6); line([[mx - 1.1 * u, my - .05 * u], [mx + 1.1 * u, my - .05 * u]], lw * .4); }
+      else if (m === 'flat') line([[mx - .7 * u, my - .1 * u], [mx + .7 * u, my - .1 * u]], lw * .8);
+      else if (m) line([[mx - .8 * u, my - .3 * u], [mx, my + .2 * u], [mx + .8 * u, my - .3 * u]], lw * .8);
+      g.restore();
+    }
+    if (o.hat === 'hard') {
+      const hx = (V === MV.side ? .3 : V === MV.q ? .6 : 0) * u, hw = V === MV.side ? .66 : 1;
+      g.save(); g.translate(hx, 0); g.scale(hw, 1);
+      const d = []; for (let i = 0; i <= 10; i++) { const a = Math.PI + i / 10 * Math.PI; d.push([Math.cos(a) * 3.5 * u, -8 * u + Math.sin(a) * 3.1 * u]); }
+      shape(d, '#F2C53D', true, .8); box(-4.9 * u, -8.6 * u, 9.8 * u, .9 * u, '#F2C53D', true, .8);
+      g.restore();
+    }
+    V.arms.filter(a => a[3] === 1).forEach(arm);
+    if (o.carryBean) { const bx = V === MV.side ? .6 * u : 0; ell(bx, -9.1 * u, 1.25 * u, .9 * u, C.bean, true); line([[bx - .7 * u, -9.2 * u], [bx, -9 * u], [bx + .7 * u, -9.2 * u]], lw * .4, C.beanLt); }
+    g.restore();
+    // emotes, by the head
+    if (o.emote && (o.emoteK ?? 1) > .05) {
+      const k = backOut(o.emoteK ?? 1), dir = o.flip ? -1 : 1, age = o.emoteAge ?? T;
+      const ex = x + dir * (V.R + .6) * u, ey = y + (o.dy || 0) * u - 8.8 * u;
+      g.save(); g.translate(ex, ey); g.scale(k, k);
+      const s2 = u * .9;
+      if (o.emote === '!') { shape([[-.6 * s2, -2.3 * s2], [.6 * s2, -2.3 * s2], [.2 * s2, .4 * s2], [-.2 * s2, .4 * s2]], PAL.ochre, true, .8); ell(0, 1.25 * s2, .42 * s2, .42 * s2, PAL.ochre, true); }
+      else if (o.emote === '?') { line([[-1 * s2, -1.3 * s2], [-.5 * s2, -2.2 * s2], [.4 * s2, -2.3 * s2], [1 * s2, -1.6 * s2], [.7 * s2, -.8 * s2], [0, -.3 * s2], [0, .3 * s2]], s2 * .75, PAL.ink); line([[-1 * s2, -1.3 * s2], [-.5 * s2, -2.2 * s2], [.4 * s2, -2.3 * s2], [1 * s2, -1.6 * s2], [.7 * s2, -.8 * s2], [0, -.3 * s2], [0, .3 * s2]], s2 * .45, PAL.sky); ell(0, 1.25 * s2, .42 * s2, .42 * s2, PAL.sky, true); }
+      else if (o.emote === 'sweat') { const dy = (age * 1.5 % 1) * s2; shape([[0, -1.6 * s2 + dy], [.9 * s2, .2 * s2 + dy], [0, .9 * s2 + dy], [-.9 * s2, .2 * s2 + dy]], PAL.sky, true, .6); }
+      else if (o.emote === 'dots') for (let i = 0; i < 3; i++) { const q = backOut(clamp((frac(age / 1.8) - i * .22) * 6)); if (q > .02) ell((i - 1) * 1.3 * s2, 0, .42 * s2 * q, .42 * s2 * q, PAL.ink); }
+      else if (o.emote === 'zzz') for (let i = 0; i < 3; i++) {
+        const ph = frac(age * .4 + i / 3), a = Math.sin(ph * Math.PI), zs = (.8 + ph * .7) * s2 * Math.min(1, a * 1.6); if (a < .12) continue;
+        const zx = ph * 2.6 * s2 - 4 * s2, zy = -ph * 4.2 * s2 + 3 * s2;
+        line([[zx - .6 * zs, zy - .6 * zs], [zx + .6 * zs, zy - .6 * zs], [zx - .6 * zs, zy + .6 * zs], [zx + .6 * zs, zy + .6 * zs]], s2 * .5, PAL.ink);
+        line([[zx - .6 * zs, zy - .6 * zs], [zx + .6 * zs, zy - .6 * zs], [zx - .6 * zs, zy + .6 * zs], [zx + .6 * zs, zy + .6 * zs]], s2 * .28, PAL.cream);
+      }
+      g.restore();
+    }
+  }
+  function puff2d(g, x, y, r, k, key) {
+    if (k <= 0 || k >= 1) return;
+    const R = r * (.4 + .9 * easeOut(k));
+    g.beginPath();
+    for (let i = 0; i <= 18; i++) { const a = i / 18 * TAU, b = 1 + .3 * Math.abs(Math.sin(a * 3 + key)); const px = x + Math.cos(a) * R * b, py = y + Math.sin(a) * R * .75 * b; i ? g.lineTo(px, py) : g.moveTo(px, py); }
+    g.closePath(); g.globalAlpha = 1 - k * k; g.fillStyle = PAL.cream; g.fill();
+    if (k < .6) { g.strokeStyle = PAL.ink; g.lineWidth = r * .07; g.lineJoin = 'round'; g.stroke(); }
+    if (k < .5) for (let i = 0; i < 5; i++) {
+      const a = i / 5 * TAU + key, d = R * (1.2 + .6 * k);
+      g.beginPath(); g.moveTo(x + Math.cos(a) * d, y + Math.sin(a) * d * .75); g.lineTo(x + Math.cos(a) * (d + r * .35), y + Math.sin(a) * (d + r * .35) * .75); g.lineWidth = r * .06; g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+
   // ---------- the film ----------
   function film(t, lt, dur) {
     const [cx, cy, z] = camAt(t);
     const shake = (t > tFreeze && t < tFreeze + .3) ? shakeXY(t, 6 * Math.exp(-(t - tFreeze) * 12)) : [0, 0];
     camBegin(cx + shake[0], cy + shake[1], z);
-    room(t);
+    layer2(() => { room(t); whiteboard(t); machine(t); sack(t); sugar(322, 1340, 30, 'pillow'); });
     note(t, 1400, 330);
-    whiteboard(t); machine(t); sack(t);
-    sugar(322, 1340, 30, 'pillow');
 
-    // everything that stands on the desk, back to front
-    const D = [];
+    // Everything that stands on the desk, back to front. The minis go on a plain 2D ink layer (mini2d): with hundreds
+    // of them, p5.brush's per-colour compositing costs seconds a frame on a software GPU. Minis behind Clawd are
+    // composited before Clawd is painted, the ones in front after.
     const cl = clawdPose(t);
-    D.push([GY, () => {
-      clawd(MX, GY, MU, { ...cl, boilKey: 'main' });
-    }]);
     let W = null;
+    const back = [], front = [];
     for (let i = 0; i < M.length; i++) {
       const st = posAt(i, t); if (!st) continue;
-      if (i === 0 && t >= tPick) { W = walker(t, st); const w = W; D.push([w.y + .5, () => clawd(w.x, w.y, w.u, w.o)]); continue; }
-      const m = M[i]; const { u, o } = miniOpts(m, st, t); const sx0 = st.x;
+      if (i === 0 && t >= tPick) { W = walker(t, st); front.push([W.y + .5, W.x, W.y, W.u, W.o, 0]); continue; }
+      const m = M[i]; const { u, o } = miniOpts(m, st, t);
       const grow = st.pose.hop != null ? backOut(seg(t, ts(i), ts(i) + .22)) : 1;
-      let sx = sx0;
+      let sx = st.x;
       if (t >= tGo && m.job !== 'sleep' && m.job !== 'audience') {   // scramble: everyone rushes back out
         const k = t - tGo, dir = st.x > MX ? 1 : -1;
         if (m.job === 'wander' || i < 4) { o.view = 'side'; o.flip = dir < 0; o.walk = k * 7 + m.h * 3; sx += dir * 900 * easeIn(clamp(k / .6)) * (.5 + m.h); }
       }
-      const X = sx, Y = st.y; D.push([st.pose.sortY || Y, () => clawd(X, Y, u * grow, o)]);
+      const sy = st.pose.sortY || st.y;
+      (sy < GY ? back : front).push([sy, sx, st.y, u * grow, o, i]);
     }
-    D.sort((a, b) => a[0] - b[0]);
-    for (const [, f] of D) { if (window.PROF_NOMINI && D.length > 5) break; f(); }
-
-    // puffs where minis pop out
-    for (let i = 0; i < M.length; i++) {
-      const t0 = ts(i), k = seg(t, t0, t0 + .38); if (k <= 0 || k >= 1) continue;
-      const pi = parentOf(i), src = pi < 0 ? armTip(MX, GY, MU, cl, 'R') : (() => { const p = posAt(pi, t0); return p ? [p.x, p.y - 6 * uAt(p.y)] : [MX, GY]; })();
-      if (!window.PROF_NOPUFF) puff(src[0], src[1], i < 4 ? 70 : 34 + 30 * hash(i), k, i);
-    }
+    const layer = (list, slot, extra) => layer2(g => {
+      list.sort((a, b) => a[0] - b[0]);
+      for (const [, x, y, u, o, id] of list) if (u > .5) mini2d(g, x, y, u, o, 'm' + id);
+      if (extra) extra(g);
+    }, false, slot);
+    layer(back, 'back');
+    clawd(MX, GY, MU, { ...cl, boilKey: 'main' });
+    layer(front, 'front', g => {   // puffs where minis pop out
+      for (let i = 0; i < M.length; i++) {
+        const t0 = ts(i), k = seg(t, t0, t0 + .38); if (k <= 0 || k >= 1) continue;
+        const pi = parentOf(i), src = pi < 0 ? armTip(MX, GY, MU, cl, 'R') : (() => { const p = posAt(pi, t0); return p ? [p.x, p.y - 6 * uAt(p.y)] : [MX, GY]; })();
+        puff2d(g, src[0], src[1], i < 4 ? 70 : 34 + 30 * hash(i), k, i);
+      }
+    });
 
     // knuckle cracks at the arm tips
     for (const [tc, w] of [[tCr1, 'L'], [tCr1 + .03, 'R'], [tCr2, 'R'], [tCr2 + .03, 'L']]) {
@@ -510,7 +702,11 @@
         const k = ease(seg(t, tTake, tTake + .18));
         const cp = side ? [ct[0] + 6, ct[1] - 12] : [ct[0] + 4, ct[1] - 14];
         p = [lerp(p[0], cp[0], k), lerp(p[1], cp[1], k)];
-        if (t > tSip - .04 && t < tSip1 - .12) { tilt = -.7 * ease(seg(t, tSip - .04, tSip + .1)); steam = .3; }
+        const sipK = ease(seg(t, tSip - .12, tSip + .02)) * (1 - ease(seg(t, tSip1 - .2, tSip1 - .05)));
+        if (sipK > 0) {   // the cup comes right up to the mouth and tips
+          const mx = MX + (cl.dx || 0) * MU + 2.6 * MU, my = GY + (cl.dy || 0) * MU - 4.6 * MU * (1 - (cl.sq || 0));
+          p = [lerp(p[0], mx + 16, sipK), lerp(p[1], my - 6, sipK)]; tilt = -.75 * sipK; steam = 1 - .7 * sipK;
+        }
       }
       if (t >= tBack + .1) {
         const k = ease(seg(t, tBack + .1, tBack + .25)), cp = [ct[0] + 4, ct[1] - 14];
@@ -523,8 +719,8 @@
     if (t > tBubble) bubble(t, MX + 300, GY - 420);
     camEnd();
     boilSeed('transition');
-    if (lt < .3) brushWipe(.5 + lt / .6, [C.deskDk, C.desk]);
-    if (t > tWipe) brushWipe(seg(t, tWipe, dur) * .5, [C.deskDk, C.desk]);
+    if (lt < .3) wipe2(.5 + lt / .6, [C.deskDk, C.desk]);
+    if (t > tWipe) wipe2(seg(t, tWipe, dur) * .5, [C.deskDk, C.desk]);
   }
 
   shots([[0, film]]);
